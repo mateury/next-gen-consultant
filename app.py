@@ -1,17 +1,24 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from external.text_model import ModelConnector
 from dotenv import load_dotenv
-import json
-
+from typing import Dict
 
 app = FastAPI()
-# Mount MCP server routes to the main app
-app.mount("/mcp", mcp_server.mcp.sse_app())
 
-# Single ModelConnector instance
-mc = None
+# CORS dla frontendu Next.js
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Przechowywanie sesji użytkowników
+sessions: Dict[str, ModelConnector] = {}
 
 
 async def process_text_streaming(text: str, websocket: WebSocket):
@@ -42,8 +49,6 @@ async def process_text_streaming(text: str, websocket: WebSocket):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global mc
-
     await websocket.accept()
     
     # Utwórz unikalną sesję
@@ -54,87 +59,38 @@ async def websocket_endpoint(websocket: WebSocket):
     # Wyślij wiadomość powitalną jako zwykły tekst
     await websocket.send_text("Cześć! Jestem wirtualnym konsultantem Play. W czym mogę Ci dziś pomóc? 😊")
     
-    print(f"Client connected: {session_id}")
+    print(f"✅ Client connected: {session_id}")
 
     try:
         while True:
-            # Receive message from client
-            data = await websocket.receive_text()
-            print(f"Received: {data}")
-
-            try:
-                message = json.loads(data)
-                action = message.get("action")
-
-                if action == "start":
-                    # Start a new conversation
-                    mc = text_model.ModelConnector()
-
-                    response = {
-                        "type": "conversation_started",
-                        "message": "Conversation started successfully"
-                    }
-                    await websocket.send_text(json.dumps(response))
-                    print("Started new conversation")
-
-                elif action == "message":
-                    # Send a message in the conversation
-                    user_message = message.get("text")
-
-                    if mc is None:
-                        response = {
-                            "type": "error",
-                            "message": "Conversation not started. Please start a conversation first."
-                        }
-                        await websocket.send_text(json.dumps(response))
-                        continue
-
-                    # Process the message with streaming
-                    await process_text_streaming(user_message, websocket)
-                    print("Processed message with streaming")
-
-                elif action == "end":
-                    # End the conversation and reset context
-                    if mc is not None:
-                        mc.clear_history()
-                        mc = None
-                        response = {
-                            "type": "conversation_ended",
-                            "message": "Conversation ended successfully"
-                        }
-                        print("Ended conversation and cleared context")
-                    else:
-                        response = {
-                            "type": "error",
-                            "message": "No active conversation to end"
-                        }
-
-                    await websocket.send_text(json.dumps(response))
-
-                else:
-                    response = {
-                        "type": "error",
-                        "message": f"Unknown action: {action}"
-                    }
-                    await websocket.send_text(json.dumps(response))
-
-            except json.JSONDecodeError:
-                response = {
-                    "type": "error",
-                    "message": "Invalid message format. Expected JSON with 'action' field"
-                }
-                await websocket.send_text(json.dumps(response))
+            # Odbierz wiadomość jako zwykły tekst (nie JSON!)
+            message = await websocket.receive_text()
+            
+            if not message.strip():
+                continue
+            
+            print(f"📨 Received from {session_id}: {message}")
+            
+            # Callback dla streamingu - wysyłaj fragmenty tekstu
+            async def stream_callback(chunk: str):
+                await websocket.send_text(chunk)
+            
+            # Przetwórz wiadomość ze streamingiem
+            await mc.get_model_response(message, stream_callback)
+            
+            print(f"✅ Completed response to {session_id}")
 
     except WebSocketDisconnect:
-        print("Client disconnected")
-        # Reset conversation on disconnect
-        if mc is not None:
-            mc.clear_history()
-            mc = None
-            print("Cleared conversation context")
+        if session_id in sessions:
+            del sessions[session_id]
+        print(f"❌ Client disconnected: {session_id}")
+    except Exception as e:
+        print(f"⚠️ Error in websocket: {e}")
+        if session_id in sessions:
+            del sessions[session_id]
 
 
-# HTML client for testing
+# HTML client dla testów (bez Next.js)
 @app.get("/")
 async def get():
     html = """
@@ -177,6 +133,19 @@ async def get():
                     font-size: 14px;
                     opacity: 0.9;
                 }
+                .status {
+                    display: inline-block;
+                    padding: 4px 12px;
+                    border-radius: 12px;
+                    font-size: 12px;
+                    margin-top: 8px;
+                }
+                .status.connected {
+                    background: rgba(72, 187, 120, 0.3);
+                }
+                .status.disconnected {
+                    background: rgba(245, 101, 101, 0.3);
+                }
                 #messages {
                     flex: 1;
                     overflow-y: auto;
@@ -190,6 +159,7 @@ async def get():
                     max-width: 70%;
                     animation: fadeIn 0.3s;
                     white-space: pre-wrap;
+                    word-wrap: break-word;
                 }
                 @keyframes fadeIn {
                     from { opacity: 0; transform: translateY(10px); }
@@ -224,6 +194,10 @@ async def get():
                 #messageText:focus {
                     border-color: #6B46C1;
                 }
+                #messageText:disabled {
+                    background: #f7fafc;
+                    cursor: not-allowed;
+                }
                 button {
                     margin-left: 10px;
                     padding: 12px 30px;
@@ -234,8 +208,9 @@ async def get():
                     font-size: 16px;
                     cursor: pointer;
                     transition: background 0.3s;
+                    font-weight: 500;
                 }
-                button:hover {
+                button:hover:not(:disabled) {
                     background: #553C9A;
                 }
                 button:disabled {
@@ -248,7 +223,7 @@ async def get():
             <div class="chat-container">
                 <div class="chat-header">
                     <h1>🎯 Play - Wirtualny Konsultant</h1>
-                    <p>Pomożemy Ci wybrać najlepszą ofertę!</p>
+                    <span id="status" class="status disconnected">❌ Rozłączono</span>
                 </div>
                 
                 <div id="messages"></div>
@@ -259,8 +234,9 @@ async def get():
                         id="messageText" 
                         autocomplete="off" 
                         placeholder="Wpisz swoją wiadomość..."
+                        disabled
                     />
-                    <button type="submit" id="sendBtn">Wyślij</button>
+                    <button type="submit" id="sendBtn" disabled>Wyślij</button>
                 </form>
             </div>
 
@@ -270,6 +246,7 @@ async def get():
                 const form = document.getElementById('form');
                 const input = document.getElementById('messageText');
                 const sendBtn = document.getElementById('sendBtn');
+                const statusEl = document.getElementById('status');
                 
                 let currentBotMessage = null;
 
@@ -283,6 +260,8 @@ async def get():
                 }
 
                 ws.onmessage = function(event) {
+                    console.log('Received:', event.data);
+                    
                     // Streaming - dodawaj do bieżącej wiadomości bota
                     if (!currentBotMessage) {
                         currentBotMessage = addMessage('', 'bot');
@@ -292,16 +271,27 @@ async def get():
                 };
 
                 ws.onopen = function(event) {
-                    console.log('Connected to server');
+                    console.log('✅ Connected to server');
+                    statusEl.textContent = '✅ Połączono';
+                    statusEl.className = 'status connected';
                     sendBtn.disabled = false;
+                    input.disabled = false;
+                    input.focus();
                 };
 
                 ws.onclose = function(event) {
-                    console.log('Disconnected from server');
+                    console.log('❌ Disconnected from server');
+                    statusEl.textContent = '❌ Rozłączono';
+                    statusEl.className = 'status disconnected';
                     sendBtn.disabled = true;
+                    input.disabled = true;
                 };
 
-                document.getElementById('form').onsubmit = function(event) {
+                ws.onerror = function(error) {
+                    console.error('⚠️ WebSocket error:', error);
+                };
+
+                form.onsubmit = function(event) {
                     event.preventDefault();
                     
                     if (!input.value.trim()) return;
@@ -309,7 +299,9 @@ async def get():
                     const userMessage = input.value.trim();
                     addMessage(userMessage, 'user');
                     
-                    // Wyślij jako zwykły tekst
+                    console.log('Sending:', userMessage);
+                    
+                    // Wyślij jako zwykły tekst (NIE JSON!)
                     ws.send(userMessage);
                     
                     input.value = '';
@@ -317,8 +309,6 @@ async def get():
                     // Przygotuj nową wiadomość bota
                     currentBotMessage = null;
                 };
-
-                input.focus();
             </script>
         </body>
     </html>
@@ -329,9 +319,20 @@ async def get():
 @app.get("/health")
 async def health():
     """Health check endpoint"""
-    return {"status": "healthy", "service": "Play Virtual Consultant"}
+    return {
+        "status": "healthy",
+        "service": "Play Virtual Consultant",
+        "active_sessions": len(sessions)
+    }
 
 
 if __name__ == "__main__":
     load_dotenv()
+    print("=" * 60)
+    print("🚀 Play Virtual Consultant API")
+    print("=" * 60)
+    print("📍 WebSocket: ws://localhost:8000/ws")
+    print("🌐 HTML Test Client: http://localhost:8000")
+    print("💚 Health Check: http://localhost:8000/health")
+    print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=8000)
