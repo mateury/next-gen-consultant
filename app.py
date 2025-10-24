@@ -3,7 +3,6 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 from external.text_model import ModelConnector
 from dotenv import load_dotenv
-import asyncio
 from typing import Dict
 
 app = FastAPI()
@@ -21,39 +20,30 @@ async def websocket_endpoint(websocket: WebSocket):
     mc = ModelConnector()
     sessions[session_id] = mc
     
-    await websocket.send_json({
-        "type": "connected",
-        "message": "Cześć! Jestem wirtualnym konsultantem Play. W czym mogę Ci dziś pomóc? 😊"
-    })
+    # Wyślij wiadomość powitalną jako zwykły tekst
+    await websocket.send_text("Cześć! Jestem wirtualnym konsultantem Play. W czym mogę Ci dziś pomóc? 😊")
     
     print(f"Client connected: {session_id}")
 
     try:
         while True:
-            # Receive text from client
-            data = await websocket.receive_json()
-            message = data.get("message", "")
+            # Odbierz wiadomość jako tekst
+            message = await websocket.receive_text()
             
-            if not message:
+            if not message.strip():
                 continue
             
             print(f"Received from {session_id}: {message}")
             
-            # Callback dla streamingu
+            # Callback dla streamingu - wysyłaj fragmenty tekstu
             async def stream_callback(chunk: str):
-                await websocket.send_json({
-                    "type": "stream",
-                    "content": chunk
-                })
+                await websocket.send_text(chunk)
             
             # Process with streaming
             response = await mc.get_model_response(message, stream_callback)
             
-            # Send completion signal
-            await websocket.send_json({
-                "type": "complete",
-                "content": response
-            })
+            # Opcjonalnie: wyślij sygnał końca (pusty string lub specjalny marker)
+            # await websocket.send_text("")  # Możesz odkomentować jeśli chcesz
             
             print(f"Completed response to {session_id}")
 
@@ -61,9 +51,13 @@ async def websocket_endpoint(websocket: WebSocket):
         if session_id in sessions:
             del sessions[session_id]
         print(f"Client disconnected: {session_id}")
+    except Exception as e:
+        print(f"Error in websocket connection: {e}")
+        if session_id in sessions:
+            del sessions[session_id]
 
 
-# Zaktualizowany HTML z lepszym UI
+# Zaktualizowany HTML (dla testów bez frontendu)
 @app.get("/")
 async def get():
     html = """
@@ -118,6 +112,7 @@ async def get():
                     border-radius: 12px;
                     max-width: 70%;
                     animation: fadeIn 0.3s;
+                    white-space: pre-wrap;
                 }
                 @keyframes fadeIn {
                     from { opacity: 0; transform: translateY(10px); }
@@ -133,14 +128,6 @@ async def get():
                     background: white;
                     border: 1px solid #e2e8f0;
                     color: #2d3748;
-                }
-                .system-message {
-                    background: #edf2f7;
-                    color: #4a5568;
-                    text-align: center;
-                    font-size: 14px;
-                    margin: 10px auto;
-                    max-width: 80%;
                 }
                 .chat-input {
                     display: flex;
@@ -178,15 +165,6 @@ async def get():
                     background: #cbd5e0;
                     cursor: not-allowed;
                 }
-                .typing-indicator {
-                    display: none;
-                    padding: 10px;
-                    color: #718096;
-                    font-style: italic;
-                }
-                .typing-indicator.active {
-                    display: block;
-                }
             </style>
         </head>
         <body>
@@ -197,7 +175,6 @@ async def get():
                 </div>
                 
                 <div id="messages"></div>
-                <div class="typing-indicator" id="typing">Konsultant pisze...</div>
                 
                 <form class="chat-input" id="form">
                     <input 
@@ -216,10 +193,8 @@ async def get():
                 const form = document.getElementById('form');
                 const input = document.getElementById('messageText');
                 const sendBtn = document.getElementById('sendBtn');
-                const typingIndicator = document.getElementById('typing');
                 
                 let currentBotMessage = null;
-                let isProcessing = false;
 
                 function addMessage(text, type) {
                     const message = document.createElement('div');
@@ -231,60 +206,53 @@ async def get():
                 }
 
                 ws.onmessage = function(event) {
-                    const data = JSON.parse(event.data);
-                    
-                    if (data.type === 'connected') {
-                        addMessage(data.message, 'system');
+                    // Streaming - dodawaj do bieżącej wiadomości bota
+                    if (!currentBotMessage) {
+                        currentBotMessage = addMessage('', 'bot');
                     }
-                    else if (data.type === 'stream') {
-                        if (!currentBotMessage) {
-                            currentBotMessage = addMessage('', 'bot');
-                        }
-                        currentBotMessage.textContent += data.content;
-                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                    }
-                    else if (data.type === 'complete') {
-                        currentBotMessage = null;
-                        typingIndicator.classList.remove('active');
-                        isProcessing = false;
-                        sendBtn.disabled = false;
-                        input.disabled = false;
-                    }
+                    currentBotMessage.textContent += event.data;
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 };
 
                 ws.onopen = function(event) {
-                    addMessage('Połączono z serwerem', 'system');
+                    console.log('Connected to server');
+                    sendBtn.disabled = false;
                 };
 
                 ws.onclose = function(event) {
-                    addMessage('Rozłączono z serwerem', 'system');
+                    console.log('Disconnected from server');
                     sendBtn.disabled = true;
-                    input.disabled = true;
                 };
 
                 form.onsubmit = function(event) {
                     event.preventDefault();
                     
-                    if (isProcessing || !input.value.trim()) return;
+                    if (!input.value.trim()) return;
                     
                     const userMessage = input.value.trim();
                     addMessage(userMessage, 'user');
                     
-                    ws.send(JSON.stringify({ message: userMessage }));
+                    // Wyślij jako zwykły tekst
+                    ws.send(userMessage);
                     
                     input.value = '';
-                    isProcessing = true;
-                    sendBtn.disabled = true;
-                    typingIndicator.classList.add('active');
+                    
+                    // Przygotuj nową wiadomość bota
+                    currentBotMessage = null;
                 };
 
-                // Auto-focus on input
                 input.focus();
             </script>
         </body>
     </html>
     """
     return HTMLResponse(html)
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint"""
+    return {"status": "healthy", "service": "Play Virtual Consultant"}
 
 
 if __name__ == "__main__":
