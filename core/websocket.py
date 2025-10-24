@@ -95,19 +95,26 @@ class WebSocketHandler:
     
     async def _process_message(self, websocket: WebSocket, session_id: str, mc, message: str):
         """Process user message with AI model."""
-        # Start streaming
+        # Start streaming to client
         await websocket.send_json({
             "type": "stream_start",
             "content": ""
         })
         
-        # Streaming callback
+        # Client streaming callback
         chunk_count = 0
         total_length = 0
         chunks_preview = []
+        client_message_started = False
         
-        async def stream_callback(chunk: str):
-            nonlocal chunk_count, total_length, chunks_preview
+        async def stream_to_client(chunk: str):
+            """Stream chunks to the client."""
+            nonlocal chunk_count, total_length, chunks_preview, client_message_started
+            
+            # Skip tool command text from being sent to client
+            if chunk.startswith("[") and ("CHECK_CUSTOMER" in chunk or "GET_CATALOG" in chunk):
+                return
+            
             chunk_count += 1
             total_length += len(chunk)
             
@@ -115,14 +122,23 @@ class WebSocketHandler:
             if chunk_count <= 5:
                 chunks_preview.append(chunk)
             
-            # Send chunk
+            # Send chunk to client
             await websocket.send_json({
                 "type": "stream_chunk",
                 "content": chunk
             })
+            client_message_started = True
             
-            # Log progress
+            # Log progress every 20 chunks
             log_streaming_progress(chunk_count, total_length)
+        
+        # Internal logging callback (doesn't go to client)
+        internal_logs = []
+        
+        async def log_internal(message: str):
+            """Log internal operations (tool execution, etc)."""
+            internal_logs.append(message)
+            print(f"  🔧 {message}", end='', flush=True)
         
         log_colored("⚙️", "ROZPOCZYNAM PRZETWARZANIE", {
             "session_id": session_id,
@@ -133,11 +149,15 @@ class WebSocketHandler:
         
         # Process with model
         start_time = datetime.now()
-        response = await mc.get_model_response(message, stream_callback)
+        response = await mc.get_model_response(
+            message, 
+            stream_callback=stream_to_client,
+            internal_callback=log_internal
+        )
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
         
-        # End streaming
+        # End streaming to client
         await websocket.send_json({
             "type": "stream_end",
             "content": ""
@@ -145,12 +165,21 @@ class WebSocketHandler:
         
         log_colored("✅", "ZAKOŃCZONO PRZETWARZANIE", {
             "session_id": session_id,
-            "chunks_sent": chunk_count,
-            "total_length": total_length,
+            "chunks_sent_to_client": chunk_count,
+            "total_client_length": total_length,
             "duration_seconds": round(duration, 2),
             "chars_per_second": round(total_length / duration, 2) if duration > 0 else 0,
+            "internal_operations": len(internal_logs),
             "first_chunks": "".join(chunks_preview[:3])
         })
+        
+        # Log internal operations
+        if internal_logs:
+            print("\n" + "─"*80)
+            print("🔧 OPERACJE WEWNĘTRZNE (nie widoczne dla klienta):")
+            for log in internal_logs:
+                print(f"  • {log.strip()}")
+            print("─"*80)
         
         # Log history after processing
         print("\n" + "━"*80)
@@ -159,10 +188,11 @@ class WebSocketHandler:
         log_history(session_id, mc.get_history(), mc.get_stats())
         
         # Log full AI response
-        log_colored("🤖", "ODPOWIEDŹ AI (pełna)", {
+        log_colored("🤖", "ODPOWIEDŹ AI (pełna - klient widzi tylko końcówkę)", {
             "session_id": session_id,
             "response_preview": response[:300] + "..." if len(response) > 300 else response,
             "full_length": len(response),
+            "client_visible_length": total_length,
             "has_tool_commands": any(cmd in response for cmd in ["[CHECK_CUSTOMER:", "[GET_CATALOG"])
         })
     

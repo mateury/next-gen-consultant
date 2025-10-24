@@ -43,26 +43,39 @@ class ModelConnector:
     async def _process_response_with_tools(
         self, 
         text: str, 
-        stream_callback: Optional[Callable[[str], None]] = None
+        stream_callback: Optional[Callable[[str], None]] = None,
+        internal_callback: Optional[Callable[[str], None]] = None
     ) -> str:
         """
         Process AI response and execute any tool commands found.
         
         Args:
             text: AI response text that may contain tool commands
-            stream_callback: Optional callback for streaming results
+            stream_callback: Optional callback for streaming to CLIENT
+            internal_callback: Optional callback for internal logging only
             
         Returns:
             Final processed response text
         """
-        # Find and execute tool commands
-        tool_results = await self.tool_executor.execute_all_commands(
-            text, 
-            callback=stream_callback
-        )
+        # Find tool commands
+        tool_results = []
+        commands = self.tool_executor.find_tool_commands(text)
         
-        if not tool_results:
+        if not commands:
             return text
+        
+        # Execute tools and collect results (DON'T stream to client)
+        for command in commands:
+            # Log internally but don't send to client
+            if internal_callback:
+                await internal_callback(f"\n🔧 Wykonuję narzędzie: {command}\n")
+            
+            result = await self.tool_executor.execute_command(command)
+            tool_results.append((command, result))
+            
+            # Log result internally
+            if internal_callback:
+                await internal_callback(f"✅ Otrzymano wynik ({len(result)} znaków)\n")
         
         # Format results and create follow-up prompt
         tool_results_text = self.tool_executor.format_tool_results(tool_results)
@@ -73,11 +86,12 @@ class ModelConnector:
         # Add to history and get final response
         self.conversation_history.append(HumanMessage(content=follow_up_prompt))
         
-        # Stream final response
+        # Stream ONLY the final AI response to client (not tool results)
         final_response = ''
         async for chunk in self.llm.astream(self.conversation_history):
             if chunk.content:
                 final_response += chunk.content
+                # This goes to the client
                 if stream_callback:
                     await stream_callback(chunk.content)
         
@@ -86,14 +100,16 @@ class ModelConnector:
     async def get_model_response(
         self, 
         input_text: str, 
-        stream_callback: Optional[Callable[[str], None]] = None
+        stream_callback: Optional[Callable[[str], None]] = None,
+        internal_callback: Optional[Callable[[str], None]] = None
     ) -> str:
         """
         Get response from the AI model with tool support.
         
         Args:
             input_text: User's message
-            stream_callback: Optional callback for streaming (receives chunks)
+            stream_callback: Optional callback for streaming to CLIENT
+            internal_callback: Optional callback for internal logging only
         
         Returns:
             Complete response text
@@ -106,6 +122,7 @@ class ModelConnector:
         async for chunk in self.llm.astream(self.conversation_history):
             if chunk.content:
                 output_text += chunk.content
+                # Stream to client
                 if stream_callback:
                     await stream_callback(chunk.content)
         
@@ -116,10 +133,16 @@ class ModelConnector:
             # Add initial AI response to history
             self.conversation_history.append(AIMessage(content=output_text))
             
+            # Log tool detection internally
+            if internal_callback:
+                await internal_callback(f"\n⚙️ Wykryto {len(tools_found)} narzędzi: {tools_found}\n")
+            
             # Execute tools and get final response
+            # Note: This will REPLACE what was already streamed to client
             final_text = await self._process_response_with_tools(
                 output_text, 
-                stream_callback
+                stream_callback,
+                internal_callback
             )
             
             # Add final response to history
