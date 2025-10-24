@@ -5,6 +5,8 @@ import uvicorn
 from external.text_model import ModelConnector
 from dotenv import load_dotenv
 from typing import Dict
+import json
+from datetime import datetime
 
 app = FastAPI()
 
@@ -21,6 +23,52 @@ app.add_middleware(
 sessions: Dict[str, ModelConnector] = {}
 
 
+def log_colored(emoji: str, message: str, data=None):
+    """Kolorowe logowanie z timestampem"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"\n{'='*80}")
+    print(f"{emoji} [{timestamp}] {message}")
+    if data:
+        print(f"{'─'*80}")
+        if isinstance(data, (dict, list)):
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+        else:
+            print(str(data))
+    print(f"{'='*80}\n")
+
+
+def log_history(session_id: str, history: list):
+    """Wyświetl szczegółową historię konwersacji"""
+    print(f"\n{'┌'+'─'*78+'┐'}")
+    print(f"│ 📚 HISTORIA KONWERSACJI - Session: {session_id[:16]}... {'│':>34}")
+    print(f"│ Liczba wiadomości: {len(history):<56} │")
+    print(f"├{'─'*78}┤")
+    
+    for idx, msg in enumerate(history, 1):
+        msg_type = msg.__class__.__name__
+        
+        if msg_type == "SystemMessage":
+            icon = "🤖"
+            label = "SYSTEM"
+            preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+        elif msg_type == "HumanMessage":
+            icon = "👤"
+            label = "USER  "
+            preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+        elif msg_type == "AIMessage":
+            icon = "🤖"
+            label = "AI    "
+            preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+        else:
+            icon = "❓"
+            label = "OTHER "
+            preview = str(msg)[:100]
+        
+        print(f"│ {idx:2}. {icon} [{label}] {preview:<55} │")
+    
+    print(f"└{'─'*78}┘\n")
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -30,10 +78,20 @@ async def websocket_endpoint(websocket: WebSocket):
     mc = ModelConnector()
     sessions[session_id] = mc
     
-    # Wyślij wiadomość powitalną jako zwykły tekst
-    await websocket.send_text("Cześć! Jestem wirtualnym konsultantem Play. W czym mogę Ci dziś pomóc? 😊")
+    log_colored("🟢", f"NOWE POŁĄCZENIE", {
+        "session_id": session_id,
+        "client": str(websocket.client),
+        "total_sessions": len(sessions)
+    })
     
-    print(f"✅ Client connected: {session_id}")
+    # Wyślij wiadomość powitalną
+    welcome_msg = "Cześć! Jestem wirtualnym konsultantem Play. W czym mogę Ci dziś pomóc? 😊"
+    await websocket.send_text(welcome_msg)
+    
+    log_colored("📤", "WYSŁANO POWITANIE", {
+        "session_id": session_id,
+        "message": welcome_msg
+    })
 
     try:
         while True:
@@ -41,34 +99,102 @@ async def websocket_endpoint(websocket: WebSocket):
             message = await websocket.receive_text()
             
             if not message.strip():
+                log_colored("⚠️", "OTRZYMANO PUSTĄ WIADOMOŚĆ", {"session_id": session_id})
                 continue
             
-            print(f"📨 Received from {session_id}: {message}")
+            log_colored("📨", "OTRZYMANO WIADOMOŚĆ OD UŻYTKOWNIKA", {
+                "session_id": session_id,
+                "message": message,
+                "length": len(message)
+            })
+            
+            # Pokaż historię PRZED przetworzeniem
+            log_history(session_id, mc.get_history())
             
             try:
-                # Callback dla streamingu - wysyłaj fragmenty tekstu
+                # Callback dla streamingu
+                chunk_count = 0
+                total_length = 0
+                
                 async def stream_callback(chunk: str):
+                    nonlocal chunk_count, total_length
+                    chunk_count += 1
+                    total_length += len(chunk)
                     await websocket.send_text(chunk)
+                    
+                    # Loguj co 10 chunków
+                    if chunk_count % 10 == 0:
+                        print(f"  📊 Streaming progress: {chunk_count} chunks, {total_length} chars")
+                
+                log_colored("⚙️", "ROZPOCZYNAM PRZETWARZANIE", {
+                    "session_id": session_id,
+                    "model": "gpt-oss-120b (Scaleway)",
+                    "streaming": True
+                })
                 
                 # Przetwórz wiadomość ze streamingiem
-                await mc.get_model_response(message, stream_callback)
+                start_time = datetime.now()
+                response = await mc.get_model_response(message, stream_callback)
+                end_time = datetime.now()
+                duration = (end_time - start_time).total_seconds()
                 
-                print(f"✅ Completed response to {session_id}")
+                log_colored("✅", "ZAKOŃCZONO PRZETWARZANIE", {
+                    "session_id": session_id,
+                    "chunks_sent": chunk_count,
+                    "total_length": total_length,
+                    "duration_seconds": round(duration, 2),
+                    "chars_per_second": round(total_length / duration, 2) if duration > 0 else 0
+                })
+                
+                # Pokaż historię PO przetworzeniu
+                log_history(session_id, mc.get_history())
+                
+                # Pokaż odpowiedź AI
+                log_colored("🤖", "ODPOWIEDŹ AI (pełna)", {
+                    "session_id": session_id,
+                    "response_preview": response[:500] + "..." if len(response) > 500 else response,
+                    "full_length": len(response)
+                })
                 
             except Exception as api_error:
-                # Obsłuż błędy API (np. 502 Bad Gateway)
+                log_colored("❌", "BŁĄD API", {
+                    "session_id": session_id,
+                    "error_type": type(api_error).__name__,
+                    "error_message": str(api_error),
+                    "user_message": message
+                })
+                
                 error_message = f"\n\n⚠️ Przepraszam, wystąpił problem z połączeniem. Spróbuj ponownie za chwilę."
                 await websocket.send_text(error_message)
-                print(f"⚠️ API Error for {session_id}: {api_error}")
 
     except WebSocketDisconnect:
         if session_id in sessions:
+            # Zapisz ostatnią historię przed usunięciem
+            final_history = sessions[session_id].get_history()
             del sessions[session_id]
-        print(f"❌ Client disconnected: {session_id}")
+            
+            log_colored("🔴", "ROZŁĄCZONO KLIENTA", {
+                "session_id": session_id,
+                "final_history_length": len(final_history),
+                "remaining_sessions": len(sessions)
+            })
+            
+            # Pokaż ostateczną historię
+            log_history(session_id, final_history)
+        
     except Exception as e:
-        print(f"⚠️ Error in websocket: {e}")
+        log_colored("💥", "NIEOCZEKIWANY BŁĄD", {
+            "session_id": session_id,
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "traceback": True
+        })
+        
         if session_id in sessions:
             del sessions[session_id]
+        
+        import traceback
+        traceback.print_exc()
 
 
 # HTML client dla testów

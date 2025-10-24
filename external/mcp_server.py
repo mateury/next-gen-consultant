@@ -40,7 +40,7 @@ def format_customer_info(customer_data: dict) -> str:
         return f"❌ {customer_data['error']}"
     
     info = f"""
-📋 Informacje o kliencie:
+ Informacje o kliencie:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👤 Imię i nazwisko: {customer_data.get('firstName', '')} {customer_data.get('lastName', '')}
 📧 Email: {customer_data.get('email', 'brak')}
