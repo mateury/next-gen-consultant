@@ -21,32 +21,6 @@ app.add_middleware(
 sessions: Dict[str, ModelConnector] = {}
 
 
-async def process_text_streaming(text: str, websocket: WebSocket):
-    """Process text and stream responses to websocket"""
-    if mc is None:
-        await websocket.send_text(json.dumps({
-            "type": "error",
-            "message": "Conversation not started"
-        }))
-        return
-
-    # Stream the response
-    full_response = ""
-    async for chunk in mc.get_model_response_streaming(text):
-        full_response += chunk
-        # Send each chunk as it arrives
-        await websocket.send_text(json.dumps({
-            "type": "message_chunk",
-            "text": chunk
-        }))
-
-    # Send completion signal
-    await websocket.send_text(json.dumps({
-        "type": "message_complete",
-        "text": full_response
-    }))
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -63,7 +37,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            # Odbierz wiadomość jako zwykły tekst (nie JSON!)
+            # Odbierz wiadomość jako zwykły tekst
             message = await websocket.receive_text()
             
             if not message.strip():
@@ -71,14 +45,21 @@ async def websocket_endpoint(websocket: WebSocket):
             
             print(f"📨 Received from {session_id}: {message}")
             
-            # Callback dla streamingu - wysyłaj fragmenty tekstu
-            async def stream_callback(chunk: str):
-                await websocket.send_text(chunk)
-            
-            # Przetwórz wiadomość ze streamingiem
-            await mc.get_model_response(message, stream_callback)
-            
-            print(f"✅ Completed response to {session_id}")
+            try:
+                # Callback dla streamingu - wysyłaj fragmenty tekstu
+                async def stream_callback(chunk: str):
+                    await websocket.send_text(chunk)
+                
+                # Przetwórz wiadomość ze streamingiem
+                await mc.get_model_response(message, stream_callback)
+                
+                print(f"✅ Completed response to {session_id}")
+                
+            except Exception as api_error:
+                # Obsłuż błędy API (np. 502 Bad Gateway)
+                error_message = f"\n\n⚠️ Przepraszam, wystąpił problem z połączeniem. Spróbuj ponownie za chwilę."
+                await websocket.send_text(error_message)
+                print(f"⚠️ API Error for {session_id}: {api_error}")
 
     except WebSocketDisconnect:
         if session_id in sessions:
@@ -90,7 +71,7 @@ async def websocket_endpoint(websocket: WebSocket):
             del sessions[session_id]
 
 
-# HTML client dla testów (bez Next.js)
+# HTML client dla testów
 @app.get("/")
 async def get():
     html = """
@@ -129,10 +110,6 @@ async def get():
                     font-size: 24px;
                     margin-bottom: 5px;
                 }
-                .chat-header p {
-                    font-size: 14px;
-                    opacity: 0.9;
-                }
                 .status {
                     display: inline-block;
                     padding: 4px 12px;
@@ -140,12 +117,8 @@ async def get():
                     font-size: 12px;
                     margin-top: 8px;
                 }
-                .status.connected {
-                    background: rgba(72, 187, 120, 0.3);
-                }
-                .status.disconnected {
-                    background: rgba(245, 101, 101, 0.3);
-                }
+                .status.connected { background: rgba(72, 187, 120, 0.3); }
+                .status.disconnected { background: rgba(245, 101, 101, 0.3); }
                 #messages {
                     flex: 1;
                     overflow-y: auto;
@@ -191,9 +164,7 @@ async def get():
                     outline: none;
                     transition: border-color 0.3s;
                 }
-                #messageText:focus {
-                    border-color: #6B46C1;
-                }
+                #messageText:focus { border-color: #6B46C1; }
                 #messageText:disabled {
                     background: #f7fafc;
                     cursor: not-allowed;
@@ -210,9 +181,7 @@ async def get():
                     transition: background 0.3s;
                     font-weight: 500;
                 }
-                button:hover:not(:disabled) {
-                    background: #553C9A;
-                }
+                button:hover:not(:disabled) { background: #553C9A; }
                 button:disabled {
                     background: #cbd5e0;
                     cursor: not-allowed;
@@ -260,9 +229,6 @@ async def get():
                 }
 
                 ws.onmessage = function(event) {
-                    console.log('Received:', event.data);
-                    
-                    // Streaming - dodawaj do bieżącej wiadomości bota
                     if (!currentBotMessage) {
                         currentBotMessage = addMessage('', 'bot');
                     }
@@ -271,7 +237,7 @@ async def get():
                 };
 
                 ws.onopen = function(event) {
-                    console.log('✅ Connected to server');
+                    console.log('✅ Connected');
                     statusEl.textContent = '✅ Połączono';
                     statusEl.className = 'status connected';
                     sendBtn.disabled = false;
@@ -280,7 +246,7 @@ async def get():
                 };
 
                 ws.onclose = function(event) {
-                    console.log('❌ Disconnected from server');
+                    console.log('❌ Disconnected');
                     statusEl.textContent = '❌ Rozłączono';
                     statusEl.className = 'status disconnected';
                     sendBtn.disabled = true;
@@ -298,15 +264,8 @@ async def get():
                     
                     const userMessage = input.value.trim();
                     addMessage(userMessage, 'user');
-                    
-                    console.log('Sending:', userMessage);
-                    
-                    // Wyślij jako zwykły tekst (NIE JSON!)
                     ws.send(userMessage);
-                    
                     input.value = '';
-                    
-                    // Przygotuj nową wiadomość bota
                     currentBotMessage = null;
                 };
             </script>
