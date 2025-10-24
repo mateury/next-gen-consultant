@@ -9,7 +9,6 @@ app = FastAPI()
 
 # Simple text processing function
 def process_text(text: str) -> str:
-    mc = text_model.ModelConnector()
     model_responce = mc.get_model_response(text)
     return f"Processed: {model_responce}"
 
@@ -100,4 +99,5 @@ async def get():
 
 if __name__ == "__main__":
     load_dotenv()
+    mc = text_model.ModelConnector()
     uvicorn.run(app, host="0.0.0.0", port=8000)
