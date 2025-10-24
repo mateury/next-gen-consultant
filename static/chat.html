@@ -69,6 +69,12 @@
                 border: 1px solid #e2e8f0;
                 color: #2d3748;
             }
+            .bot-message.thinking {
+                background: #f7fafc;
+                border: 1px dashed #cbd5e0;
+                color: #718096;
+                font-style: italic;
+            }
             .error-message {
                 background: #fed7d7;
                 border: 1px solid #fc8181;
@@ -126,14 +132,25 @@
             const statusEl = document.getElementById('status');
             let currentBotMessage = null;
             let isStreaming = false;
+            let messageBuffer = '';
 
-            function addMessage(text, type) {
+            function addMessage(text, type, cssClass = '') {
                 const message = document.createElement('div');
-                message.className = `message ${type}-message`;
+                message.className = `message ${type}-message ${cssClass}`;
                 message.textContent = text;
                 messagesDiv.appendChild(message);
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 return message;
+            }
+
+            function detectToolCommand(text) {
+                // Wykryj komendy narzędzi w tekście
+                return /\[(CHECK_CUSTOMER|GET_CATALOG)[^\]]*\]/i.test(text);
+            }
+
+            function cleanToolCommands(text) {
+                // Usuń komendy narzędzi z tekstu
+                return text.replace(/\[(CHECK_CUSTOMER|GET_CATALOG)[^\]]*\]/gi, '').trim();
             }
 
             ws.onmessage = function(event) {
@@ -145,25 +162,59 @@
                         case 'message':
                             addMessage(data.content, 'bot');
                             break;
+
                         case 'stream_start':
                             isStreaming = true;
+                            messageBuffer = '';
                             currentBotMessage = addMessage('', 'bot');
                             break;
+
                         case 'stream_chunk':
                             if (currentBotMessage && isStreaming) {
-                                currentBotMessage.textContent += data.content;
+                                messageBuffer += data.content;
+                                
+                                // Sprawdź czy w buforze są komendy narzędzi
+                                if (detectToolCommand(messageBuffer)) {
+                                    // Pokaż "thinking" indicator
+                                    currentBotMessage.textContent = '🔄 Sprawdzam dane...';
+                                    currentBotMessage.className = 'message bot-message thinking';
+                                } else {
+                                    // Wyczyść ewentualne resztki komend i pokaż czysty tekst
+                                    const cleanText = cleanToolCommands(messageBuffer);
+                                    if (cleanText) {
+                                        currentBotMessage.textContent = cleanText;
+                                        currentBotMessage.className = 'message bot-message';
+                                    }
+                                }
+                                
                                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
                             }
                             break;
+
                         case 'stream_end':
+                            if (currentBotMessage && isStreaming) {
+                                // Finalne czyszczenie
+                                const finalText = cleanToolCommands(messageBuffer);
+                                if (finalText) {
+                                    currentBotMessage.textContent = finalText;
+                                    currentBotMessage.className = 'message bot-message';
+                                } else if (currentBotMessage.textContent === '🔄 Sprawdzam dane...') {
+                                    // Jeśli nadal "thinking", zostaw to
+                                    // Następny chunk przyniesie właściwą odpowiedź
+                                }
+                            }
                             isStreaming = false;
+                            messageBuffer = '';
                             currentBotMessage = null;
                             break;
+
                         case 'error':
                             addMessage(data.content, 'error');
                             isStreaming = false;
+                            messageBuffer = '';
                             currentBotMessage = null;
                             break;
+
                         default:
                             console.warn('Unknown message type:', data.type);
                     }
@@ -207,6 +258,7 @@
                 addMessage(userMessage, 'user');
                 ws.send(userMessage);
                 input.value = '';
+                messageBuffer = '';
                 currentBotMessage = null;
                 isStreaming = false;
             };
