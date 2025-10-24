@@ -1,17 +1,20 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import uvicorn
-from external import text_model
+from external import text_model, mcp_server
 from dotenv import load_dotenv
 
 app = FastAPI()
+
+# Mount MCP server routes to the main app
+app.mount("/mcp", mcp_server.mcp.sse_app())
 
 
 # Simple text processing function
 def process_text(text: str) -> str:
     mc = text_model.ModelConnector()
-    model_responce = mc.get_model_response(text)
-    return f"Processed: {model_responce}"
+    model_response = mc.get_model_response(text)
+    return model_response
 
 
 @app.websocket("/ws")

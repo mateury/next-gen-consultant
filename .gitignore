@@ -1,1 +1,4 @@
 .idea/
+__pycache__
+/external/__pycache__/__init__.cpython-313.pyc
+/external/__pycache__/text_model.cpython-313.pyc
