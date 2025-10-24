@@ -3,16 +3,47 @@ from fastapi.responses import HTMLResponse
 import uvicorn
 from external.text_model import ModelConnector
 from dotenv import load_dotenv
-from typing import Dict
+import json
+
 
 app = FastAPI()
+# Mount MCP server routes to the main app
+app.mount("/mcp", mcp_server.mcp.sse_app())
 
-# Przechowywanie sesji użytkowników
-sessions: Dict[str, ModelConnector] = {}
+# Single ModelConnector instance
+mc = None
+
+
+async def process_text_streaming(text: str, websocket: WebSocket):
+    """Process text and stream responses to websocket"""
+    if mc is None:
+        await websocket.send_text(json.dumps({
+            "type": "error",
+            "message": "Conversation not started"
+        }))
+        return
+
+    # Stream the response
+    full_response = ""
+    async for chunk in mc.get_model_response_streaming(text):
+        full_response += chunk
+        # Send each chunk as it arrives
+        await websocket.send_text(json.dumps({
+            "type": "message_chunk",
+            "text": chunk
+        }))
+
+    # Send completion signal
+    await websocket.send_text(json.dumps({
+        "type": "message_complete",
+        "text": full_response
+    }))
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global mc
+
     await websocket.accept()
     
     # Utwórz unikalną sesję
@@ -27,37 +58,83 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            # Odbierz wiadomość jako tekst
-            message = await websocket.receive_text()
-            
-            if not message.strip():
-                continue
-            
-            print(f"Received from {session_id}: {message}")
-            
-            # Callback dla streamingu - wysyłaj fragmenty tekstu
-            async def stream_callback(chunk: str):
-                await websocket.send_text(chunk)
-            
-            # Process with streaming
-            response = await mc.get_model_response(message, stream_callback)
-            
-            # Opcjonalnie: wyślij sygnał końca (pusty string lub specjalny marker)
-            # await websocket.send_text("")  # Możesz odkomentować jeśli chcesz
-            
-            print(f"Completed response to {session_id}")
+            # Receive message from client
+            data = await websocket.receive_text()
+            print(f"Received: {data}")
+
+            try:
+                message = json.loads(data)
+                action = message.get("action")
+
+                if action == "start":
+                    # Start a new conversation
+                    mc = text_model.ModelConnector()
+
+                    response = {
+                        "type": "conversation_started",
+                        "message": "Conversation started successfully"
+                    }
+                    await websocket.send_text(json.dumps(response))
+                    print("Started new conversation")
+
+                elif action == "message":
+                    # Send a message in the conversation
+                    user_message = message.get("text")
+
+                    if mc is None:
+                        response = {
+                            "type": "error",
+                            "message": "Conversation not started. Please start a conversation first."
+                        }
+                        await websocket.send_text(json.dumps(response))
+                        continue
+
+                    # Process the message with streaming
+                    await process_text_streaming(user_message, websocket)
+                    print("Processed message with streaming")
+
+                elif action == "end":
+                    # End the conversation and reset context
+                    if mc is not None:
+                        mc.clear_history()
+                        mc = None
+                        response = {
+                            "type": "conversation_ended",
+                            "message": "Conversation ended successfully"
+                        }
+                        print("Ended conversation and cleared context")
+                    else:
+                        response = {
+                            "type": "error",
+                            "message": "No active conversation to end"
+                        }
+
+                    await websocket.send_text(json.dumps(response))
+
+                else:
+                    response = {
+                        "type": "error",
+                        "message": f"Unknown action: {action}"
+                    }
+                    await websocket.send_text(json.dumps(response))
+
+            except json.JSONDecodeError:
+                response = {
+                    "type": "error",
+                    "message": "Invalid message format. Expected JSON with 'action' field"
+                }
+                await websocket.send_text(json.dumps(response))
 
     except WebSocketDisconnect:
-        if session_id in sessions:
-            del sessions[session_id]
-        print(f"Client disconnected: {session_id}")
-    except Exception as e:
-        print(f"Error in websocket connection: {e}")
-        if session_id in sessions:
-            del sessions[session_id]
+        print("Client disconnected")
+        # Reset conversation on disconnect
+        if mc is not None:
+            mc.clear_history()
+            mc = None
+            print("Cleared conversation context")
 
 
-# Zaktualizowany HTML (dla testów bez frontendu)
+# HTML client for testing
 @app.get("/")
 async def get():
     html = """
@@ -224,7 +301,7 @@ async def get():
                     sendBtn.disabled = true;
                 };
 
-                form.onsubmit = function(event) {
+                document.getElementById('form').onsubmit = function(event) {
                     event.preventDefault();
                     
                     if (!input.value.trim()) return;
