@@ -30,7 +30,7 @@ class ModelConnector:
             api_key=os.environ.get("SCW_SECRET_KEY"),
             model="gpt-oss-120b",
             max_tokens=2048,
-            temperature=0.7,
+            temperature=0.95,
             top_p=1,
             presence_penalty=0,
             streaming=True
@@ -39,12 +39,14 @@ class ModelConnector:
         self.parser = StrOutputParser()
         self.conversation_history = [SystemMessage(content=system_prompt)]
         self.tool_executor = ToolExecutor()
+        self.max_tool_iterations = 3  # Maksymalnie 3 iteracje narzędzi
     
     async def _process_response_with_tools(
         self, 
         text: str, 
         stream_callback: Optional[Callable[[str], None]] = None,
-        internal_callback: Optional[Callable[[str], None]] = None
+        internal_callback: Optional[Callable[[str], None]] = None,
+        iteration: int = 0
     ) -> str:
         """
         Process AI response and execute any tool commands found.
@@ -53,10 +55,17 @@ class ModelConnector:
             text: AI response text that may contain tool commands
             stream_callback: Optional callback for streaming to CLIENT
             internal_callback: Optional callback for internal logging only
+            iteration: Current iteration count (prevents infinite loops)
             
         Returns:
             Final processed response text
         """
+        # Zabezpieczenie przed nieskończoną pętlą
+        if iteration >= self.max_tool_iterations:
+            if internal_callback:
+                await internal_callback(f"⚠️ LIMIT ITERACJI ({self.max_tool_iterations}) - przerywam wykonywanie narzędzi\n")
+            return text
+        
         # Find tool commands
         tool_results = []
         commands = self.tool_executor.find_tool_commands(text)
@@ -68,7 +77,7 @@ class ModelConnector:
         for command in commands:
             # Log internally but don't send to client
             if internal_callback:
-                await internal_callback(f"\n🔧 Wykonuję narzędzie: {command}\n")
+                await internal_callback(f"\n🔧 Wykonuję: {command} (iteracja {iteration + 1}/{self.max_tool_iterations})\n")
             
             result = await self.tool_executor.execute_command(command)
             tool_results.append((command, result))
@@ -86,16 +95,37 @@ class ModelConnector:
         # Add to history and get final response
         self.conversation_history.append(HumanMessage(content=follow_up_prompt))
         
-        # Stream ONLY the final AI response to client (not tool results)
+        # Get response from LLM - DON'T stream to client yet (we might need to process more tools)
         final_response = ''
+        temp_chunks = []
         async for chunk in self.llm.astream(self.conversation_history):
             if chunk.content:
                 final_response += chunk.content
-                # This goes to the client
-                if stream_callback:
-                    await stream_callback(chunk.content)
+                temp_chunks.append(chunk.content)
         
-        return final_response
+        # Check if new response also contains tools (recursive)
+        new_tools = self.tool_executor.find_tool_commands(final_response)
+        if new_tools and iteration + 1 < self.max_tool_iterations:
+            if internal_callback:
+                await internal_callback(f"\n⚠️ Wykryto kolejne narzędzia w odpowiedzi: {new_tools}\n")
+            
+            # Add current response to history
+            self.conversation_history.append(AIMessage(content=final_response))
+            
+            # Process recursively - DON'T stream yet!
+            return await self._process_response_with_tools(
+                final_response,
+                stream_callback,
+                internal_callback,
+                iteration + 1
+            )
+        else:
+            # No more tools - NOW stream the final response to client
+            if stream_callback:
+                for chunk in temp_chunks:
+                    await stream_callback(chunk)
+            
+            return final_response
     
     async def get_model_response(
         self, 
@@ -117,14 +147,13 @@ class ModelConnector:
         # Add user message to history
         self.conversation_history.append(HumanMessage(content=input_text))
         
-        # Get initial response from model
+        # Get initial response from model - DON'T stream yet (might contain tools)
         output_text = ''
+        temp_chunks = []
         async for chunk in self.llm.astream(self.conversation_history):
             if chunk.content:
                 output_text += chunk.content
-                # Stream to client
-                if stream_callback:
-                    await stream_callback(chunk.content)
+                temp_chunks.append(chunk.content)
         
         # Check if response contains tool commands
         tools_found = self.tool_executor.find_tool_commands(output_text)
@@ -137,12 +166,13 @@ class ModelConnector:
             if internal_callback:
                 await internal_callback(f"\n⚙️ Wykryto {len(tools_found)} narzędzi: {tools_found}\n")
             
-            # Execute tools and get final response
-            # Note: This will REPLACE what was already streamed to client
+            # Execute tools and get final response (with iteration limit)
+            # This will handle all recursive tool calls
             final_text = await self._process_response_with_tools(
                 output_text, 
                 stream_callback,
-                internal_callback
+                internal_callback,
+                iteration=0  # Start from 0
             )
             
             # Add final response to history
@@ -150,7 +180,12 @@ class ModelConnector:
             
             return final_text
         else:
-            # No tools needed, just add response to history
+            # No tools needed, stream to client NOW
+            if stream_callback:
+                for chunk in temp_chunks:
+                    await stream_callback(chunk)
+            
+            # Add response to history
             self.conversation_history.append(AIMessage(content=output_text))
             return output_text
     
