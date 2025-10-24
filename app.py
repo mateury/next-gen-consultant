@@ -25,7 +25,7 @@ sessions: Dict[str, ModelConnector] = {}
 
 def log_colored(emoji: str, message: str, data=None):
     """Kolorowe logowanie z timestampem"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     print(f"\n{'='*80}")
     print(f"{emoji} [{timestamp}] {message}")
     if data:
@@ -37,34 +37,40 @@ def log_colored(emoji: str, message: str, data=None):
     print(f"{'='*80}\n")
 
 
-def log_history(session_id: str, history: list):
+def log_history(session_id: str, history: list, stats: dict = None):
     """Wyświetl szczegółową historię konwersacji"""
     print(f"\n{'┌'+'─'*78+'┐'}")
-    print(f"│ 📚 HISTORIA KONWERSACJI - Session: {session_id[:16]}... {'│':>34}")
-    print(f"│ Liczba wiadomości: {len(history):<56} │")
+    print(f"│ 📚 HISTORIA KONWERSACJI - Session: {session_id[:16]}...{' '*34}│")
+    
+    if stats:
+        print(f"│ Total: {stats['total_messages']:3} | User: {stats['user_messages']:3} | AI: {stats['ai_messages']:3} | System: {stats['system_messages']:3} {' '*17}│")
+    else:
+        print(f"│ Liczba wiadomości: {len(history):<56} │")
+    
     print(f"├{'─'*78}┤")
     
     for idx, msg in enumerate(history, 1):
         msg_type = msg.__class__.__name__
         
         if msg_type == "SystemMessage":
-            icon = "🤖"
+            icon = "⚙️"
             label = "SYSTEM"
-            preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+            preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         elif msg_type == "HumanMessage":
             icon = "👤"
             label = "USER  "
-            preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+            preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         elif msg_type == "AIMessage":
             icon = "🤖"
             label = "AI    "
-            preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+            preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         else:
             icon = "❓"
             label = "OTHER "
-            preview = str(msg)[:100]
+            preview = str(msg)[:60]
         
-        print(f"│ {idx:2}. {icon} [{label}] {preview:<55} │")
+        preview = preview.replace('\n', ' ').replace('\r', '')
+        print(f"│ {idx:2}. {icon} [{label}] {preview:<58}│")
     
     print(f"└{'─'*78}┘\n")
 
@@ -78,24 +84,30 @@ async def websocket_endpoint(websocket: WebSocket):
     mc = ModelConnector()
     sessions[session_id] = mc
     
-    log_colored("🟢", f"NOWE POŁĄCZENIE", {
+    log_colored("🟢", "NOWE POŁĄCZENIE", {
         "session_id": session_id,
         "client": str(websocket.client),
         "total_sessions": len(sessions)
     })
     
-    # Wyślij wiadomość powitalną
+    # Wyślij wiadomość powitalną ze strukturą JSON
     welcome_msg = "Cześć! Jestem wirtualnym konsultantem Play. W czym mogę Ci dziś pomóc? 😊"
-    await websocket.send_text(welcome_msg)
+    await websocket.send_json({
+        "type": "message",
+        "content": welcome_msg
+    })
     
     log_colored("📤", "WYSŁANO POWITANIE", {
         "session_id": session_id,
         "message": welcome_msg
     })
+    
+    # Pokaż początkową historię
+    log_history(session_id, mc.get_history(), mc.get_stats())
 
     try:
         while True:
-            # Odbierz wiadomość jako zwykły tekst
+            # Odbierz wiadomość jako tekst
             message = await websocket.receive_text()
             
             if not message.strip():
@@ -109,27 +121,47 @@ async def websocket_endpoint(websocket: WebSocket):
             })
             
             # Pokaż historię PRZED przetworzeniem
-            log_history(session_id, mc.get_history())
+            print("\n" + "━"*80)
+            print("📖 HISTORIA PRZED PRZETWORZENIEM:")
+            print("━"*80)
+            log_history(session_id, mc.get_history(), mc.get_stats())
             
             try:
-                # Callback dla streamingu
+                # Wyślij sygnał rozpoczęcia streamingu
+                await websocket.send_json({
+                    "type": "stream_start",
+                    "content": ""
+                })
+                
+                # Callback dla streamingu - wysyłaj chunki
                 chunk_count = 0
                 total_length = 0
+                chunks_preview = []
                 
                 async def stream_callback(chunk: str):
-                    nonlocal chunk_count, total_length
+                    nonlocal chunk_count, total_length, chunks_preview
                     chunk_count += 1
                     total_length += len(chunk)
-                    await websocket.send_text(chunk)
                     
-                    # Loguj co 10 chunków
-                    if chunk_count % 10 == 0:
-                        print(f"  📊 Streaming progress: {chunk_count} chunks, {total_length} chars")
+                    # Zapisz pierwsze 5 chunków do podglądu
+                    if chunk_count <= 5:
+                        chunks_preview.append(chunk)
+                    
+                    # Wyślij chunk jako JSON
+                    await websocket.send_json({
+                        "type": "stream_chunk",
+                        "content": chunk
+                    })
+                    
+                    # Loguj co 20 chunków
+                    if chunk_count % 20 == 0:
+                        print(f"  📊 Streaming: {chunk_count} chunks | {total_length} chars")
                 
                 log_colored("⚙️", "ROZPOCZYNAM PRZETWARZANIE", {
                     "session_id": session_id,
                     "model": "gpt-oss-120b (Scaleway)",
-                    "streaming": True
+                    "streaming": True,
+                    "user_message": message
                 })
                 
                 # Przetwórz wiadomość ze streamingiem
@@ -138,22 +170,33 @@ async def websocket_endpoint(websocket: WebSocket):
                 end_time = datetime.now()
                 duration = (end_time - start_time).total_seconds()
                 
+                # Wyślij sygnał zakończenia streamingu
+                await websocket.send_json({
+                    "type": "stream_end",
+                    "content": ""
+                })
+                
                 log_colored("✅", "ZAKOŃCZONO PRZETWARZANIE", {
                     "session_id": session_id,
                     "chunks_sent": chunk_count,
                     "total_length": total_length,
                     "duration_seconds": round(duration, 2),
-                    "chars_per_second": round(total_length / duration, 2) if duration > 0 else 0
+                    "chars_per_second": round(total_length / duration, 2) if duration > 0 else 0,
+                    "first_chunks": "".join(chunks_preview[:3])
                 })
                 
                 # Pokaż historię PO przetworzeniu
-                log_history(session_id, mc.get_history())
+                print("\n" + "━"*80)
+                print("📖 HISTORIA PO PRZETWORZENIU:")
+                print("━"*80)
+                log_history(session_id, mc.get_history(), mc.get_stats())
                 
-                # Pokaż odpowiedź AI
+                # Pokaż pełną odpowiedź AI
                 log_colored("🤖", "ODPOWIEDŹ AI (pełna)", {
                     "session_id": session_id,
-                    "response_preview": response[:500] + "..." if len(response) > 500 else response,
-                    "full_length": len(response)
+                    "response_preview": response[:300] + "..." if len(response) > 300 else response,
+                    "full_length": len(response),
+                    "has_tool_commands": any(cmd in response for cmd in ["[CHECK_CUSTOMER:", "[GET_CATALOG"])
                 })
                 
             except Exception as api_error:
@@ -164,40 +207,51 @@ async def websocket_endpoint(websocket: WebSocket):
                     "user_message": message
                 })
                 
-                error_message = f"\n\n⚠️ Przepraszam, wystąpił problem z połączeniem. Spróbuj ponownie za chwilę."
-                await websocket.send_text(error_message)
+                error_message = f"⚠️ Przepraszam, wystąpił problem z połączeniem. Spróbuj ponownie za chwilę.\n\nBłąd: {type(api_error).__name__}"
+                
+                # Wyślij błąd jako JSON
+                await websocket.send_json({
+                    "type": "error",
+                    "content": error_message
+                })
+                
+                import traceback
+                print("📍 Stack trace:")
+                traceback.print_exc()
 
     except WebSocketDisconnect:
         if session_id in sessions:
-            # Zapisz ostatnią historię przed usunięciem
             final_history = sessions[session_id].get_history()
+            final_stats = sessions[session_id].get_stats()
             del sessions[session_id]
             
             log_colored("🔴", "ROZŁĄCZONO KLIENTA", {
                 "session_id": session_id,
-                "final_history_length": len(final_history),
+                "final_stats": final_stats,
                 "remaining_sessions": len(sessions)
             })
             
-            # Pokaż ostateczną historię
-            log_history(session_id, final_history)
+            print("\n" + "━"*80)
+            print("📖 OSTATECZNA HISTORIA PRZED ROZŁĄCZENIEM:")
+            print("━"*80)
+            log_history(session_id, final_history, final_stats)
         
     except Exception as e:
         log_colored("💥", "NIEOCZEKIWANY BŁĄD", {
             "session_id": session_id,
             "error_type": type(e).__name__,
-            "error_message": str(e),
-            "traceback": True
+            "error_message": str(e)
         })
         
         if session_id in sessions:
             del sessions[session_id]
         
         import traceback
+        print("📍 Stack trace:")
         traceback.print_exc()
 
 
-# HTML client dla testów
+# HTML client z obsługą JSON streaming
 @app.get("/")
 async def get():
     html = """
@@ -232,10 +286,7 @@ async def get():
                     padding: 20px;
                     text-align: center;
                 }
-                .chat-header h1 {
-                    font-size: 24px;
-                    margin-bottom: 5px;
-                }
+                .chat-header h1 { font-size: 24px; margin-bottom: 5px; }
                 .status {
                     display: inline-block;
                     padding: 4px 12px;
@@ -275,6 +326,12 @@ async def get():
                     border: 1px solid #e2e8f0;
                     color: #2d3748;
                 }
+                .error-message {
+                    background: #fed7d7;
+                    border: 1px solid #fc8181;
+                    color: #c53030;
+                    max-width: 70%;
+                }
                 .chat-input {
                     display: flex;
                     padding: 20px;
@@ -288,13 +345,8 @@ async def get():
                     border-radius: 25px;
                     font-size: 16px;
                     outline: none;
-                    transition: border-color 0.3s;
                 }
                 #messageText:focus { border-color: #6B46C1; }
-                #messageText:disabled {
-                    background: #f7fafc;
-                    cursor: not-allowed;
-                }
                 button {
                     margin-left: 10px;
                     padding: 12px 30px;
@@ -304,14 +356,10 @@ async def get():
                     border-radius: 25px;
                     font-size: 16px;
                     cursor: pointer;
-                    transition: background 0.3s;
                     font-weight: 500;
                 }
                 button:hover:not(:disabled) { background: #553C9A; }
-                button:disabled {
-                    background: #cbd5e0;
-                    cursor: not-allowed;
-                }
+                button:disabled { background: #cbd5e0; cursor: not-allowed; }
             </style>
         </head>
         <body>
@@ -320,21 +368,12 @@ async def get():
                     <h1>🎯 Play - Wirtualny Konsultant</h1>
                     <span id="status" class="status disconnected">❌ Rozłączono</span>
                 </div>
-                
                 <div id="messages"></div>
-                
                 <form class="chat-input" id="form">
-                    <input 
-                        type="text" 
-                        id="messageText" 
-                        autocomplete="off" 
-                        placeholder="Wpisz swoją wiadomość..."
-                        disabled
-                    />
+                    <input type="text" id="messageText" autocomplete="off" placeholder="Wpisz swoją wiadomość..." disabled />
                     <button type="submit" id="sendBtn" disabled>Wyślij</button>
                 </form>
             </div>
-
             <script>
                 const ws = new WebSocket("ws://localhost:8000/ws");
                 const messagesDiv = document.getElementById('messages');
@@ -342,8 +381,8 @@ async def get():
                 const input = document.getElementById('messageText');
                 const sendBtn = document.getElementById('sendBtn');
                 const statusEl = document.getElementById('status');
-                
                 let currentBotMessage = null;
+                let isStreaming = false;
 
                 function addMessage(text, type) {
                     const message = document.createElement('div');
@@ -355,14 +394,59 @@ async def get():
                 }
 
                 ws.onmessage = function(event) {
-                    if (!currentBotMessage) {
-                        currentBotMessage = addMessage('', 'bot');
+                    try {
+                        // Parsuj JSON
+                        const data = JSON.parse(event.data);
+                        console.log('Received:', data);
+
+                        switch(data.type) {
+                            case 'message':
+                                // Zwykła wiadomość (np. powitanie)
+                                addMessage(data.content, 'bot');
+                                break;
+
+                            case 'stream_start':
+                                // Rozpocznij nową wiadomość od bota
+                                isStreaming = true;
+                                currentBotMessage = addMessage('', 'bot');
+                                break;
+
+                            case 'stream_chunk':
+                                // Dodaj chunk do bieżącej wiadomości
+                                if (currentBotMessage && isStreaming) {
+                                    currentBotMessage.textContent += data.content;
+                                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                                }
+                                break;
+
+                            case 'stream_end':
+                                // Zakończ streaming
+                                isStreaming = false;
+                                currentBotMessage = null;
+                                break;
+
+                            case 'error':
+                                // Wyświetl błąd
+                                addMessage(data.content, 'error');
+                                isStreaming = false;
+                                currentBotMessage = null;
+                                break;
+
+                            default:
+                                console.warn('Unknown message type:', data.type);
+                        }
+                    } catch (e) {
+                        console.error('Error parsing message:', e);
+                        // Fallback - traktuj jako zwykły tekst
+                        if (!currentBotMessage) {
+                            currentBotMessage = addMessage('', 'bot');
+                        }
+                        currentBotMessage.textContent += event.data;
+                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
                     }
-                    currentBotMessage.textContent += event.data;
-                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 };
 
-                ws.onopen = function(event) {
+                ws.onopen = function() {
                     console.log('✅ Connected');
                     statusEl.textContent = '✅ Połączono';
                     statusEl.className = 'status connected';
@@ -371,7 +455,7 @@ async def get():
                     input.focus();
                 };
 
-                ws.onclose = function(event) {
+                ws.onclose = function() {
                     console.log('❌ Disconnected');
                     statusEl.textContent = '❌ Rozłączono';
                     statusEl.className = 'status disconnected';
@@ -390,9 +474,13 @@ async def get():
                     
                     const userMessage = input.value.trim();
                     addMessage(userMessage, 'user');
+                    
+                    // Wyślij jako zwykły tekst (nie JSON)
                     ws.send(userMessage);
+                    
                     input.value = '';
                     currentBotMessage = null;
+                    isStreaming = false;
                 };
             </script>
         </body>
@@ -403,21 +491,26 @@ async def get():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
     return {
         "status": "healthy",
         "service": "Play Virtual Consultant",
-        "active_sessions": len(sessions)
+        "active_sessions": len(sessions),
+        "session_stats": {sid: sessions[sid].get_stats() for sid in sessions}
     }
 
 
 if __name__ == "__main__":
     load_dotenv()
-    print("=" * 60)
-    print("🚀 Play Virtual Consultant API")
-    print("=" * 60)
+    print("=" * 80)
+    print("🚀 Play Virtual Consultant API - JSON Streaming Mode")
+    print("=" * 80)
     print("📍 WebSocket: ws://localhost:8000/ws")
     print("🌐 HTML Test Client: http://localhost:8000")
     print("💚 Health Check: http://localhost:8000/health")
-    print("=" * 60)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    print("=" * 80)
+    print("\n📦 Message Format:")
+    print('  {"type": "stream_start", "content": ""}')
+    print('  {"type": "stream_chunk", "content": "Hello"}')
+    print('  {"type": "stream_end", "content": ""}')
+    print("=" * 80)
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
