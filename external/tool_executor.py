@@ -5,14 +5,14 @@ Tool execution logic for MCP commands.
 import re
 import json
 from typing import List, Tuple, Optional, Callable
-from .mcp_server import check_customer, get_product_catalog, create_order, check_invoices
+from .mcp_server import check_customer, get_product_catalog, create_order, check_invoices, check_invoices_by_pesel
 
 
 class ToolExecutor:
     """Handles execution of MCP tool commands."""
     
     # Regex pattern for finding tool commands
-    TOOL_PATTERN = r'\[(?:CHECK_CUSTOMER:[^\]]+|GET_CATALOG|CREATE_ORDER:[^\]]+|CHECK_INVOICES:[^\]]+)\]'
+    TOOL_PATTERN = r'\[(?:CHECK_CUSTOMER:[^\]]+|GET_CATALOG|CREATE_ORDER:[^\]]+|CHECK_INVOICES:[^\]]+|CHECK_INVOICES_BY_PESEL:[^\]]+)\]'
     
     @staticmethod
     def find_tool_commands(text: str) -> List[str]:
@@ -39,8 +39,13 @@ class ToolExecutor:
             Result from the tool as a string
         """
         try:
+            # [CHECK_INVOICES_BY_PESEL: pesel]
+            if command.upper().startswith("[CHECK_INVOICES_BY_PESEL:"):
+                pesel = command[25:-1].strip()
+                return await check_invoices_by_pesel(pesel)
+            
             # [CHECK_CUSTOMER: pesel]
-            if command.upper().startswith("[CHECK_CUSTOMER:"):
+            elif command.upper().startswith("[CHECK_CUSTOMER:"):
                 pesel = command[16:-1].strip()
                 return await check_customer(pesel)
             

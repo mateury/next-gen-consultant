@@ -325,6 +325,51 @@ async def create_order(customer_id: int, component_catalog_ids: List[int]) -> st
 
 
 @mcp.tool()
+async def check_invoices_by_pesel(pesel: str) -> str:
+    """
+    Sprawdza faktury klienta na podstawie numeru PESEL (automatycznie pobiera customer_id i faktury).
+    
+    Args:
+        pesel: Numer PESEL klienta (11 cyfr)
+    
+    Returns:
+        Informacje o kliencie wraz z listą faktur, statusami płatności i kwotami
+    
+    Example:
+        pesel="12345678901" - automatycznie znajdzie klienta i pokaże jego faktury
+    """
+    # Krok 1: Pobierz dane klienta
+    customer_data = await call_java_backend("customer", params={"pesel": pesel})
+    
+    if "error" in customer_data:
+        return f"❌ Nie znaleziono klienta o numerze PESEL: {pesel}\n{customer_data['error']}"
+    
+    if customer_data.get("status_code") == 404:
+        return f"❌ Nie znaleziono klienta o numerze PESEL: {pesel}"
+    
+    customer_id = customer_data.get('id')
+    if not customer_id:
+        return "❌ Błąd: Nie udało się pobrać ID klienta"
+    
+    customer_name = f"{customer_data.get('firstName', '')} {customer_data.get('lastName', '')}".strip()
+    
+    # Krok 2: Pobierz faktury
+    invoices_data = await call_java_backend("invoices", params={"customerId": customer_id})
+    
+    # Header z danymi klienta
+    header = f"""
+👤 Klient: {customer_name}
+🆔 PESEL: {pesel}
+🔑 ID: {customer_id}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+    
+    invoices_info = format_invoices(invoices_data)
+    
+    return header + invoices_info
+
+
+@mcp.tool()
 async def check_invoices(customer_id: int) -> str:
     """
     Sprawdza faktury klienta i status płatności.

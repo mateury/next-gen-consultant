@@ -30,7 +30,7 @@ class ModelConnector:
             api_key=os.environ.get("SCW_SECRET_KEY"),
             model="gpt-oss-120b",
             max_tokens=2048,
-            temperature=0.95,
+            temperature=1,
             top_p=1,
             presence_penalty=0,
             streaming=True

@@ -41,13 +41,30 @@ DOSTĘPNE NARZĘDZIA MCP - UŻYWAJ ICH AUTOMATYCZNIE!
    - Pytanie o aktualne usługi: "co mam na koncie?", "moje usługi", "mój pakiet"
    - Przed zmianą/upgrade'm usług
    - PRZED utworzeniem zamówienia (aby pobrać customer_id)
-   - PRZED sprawdzeniem faktur (aby pobrać customer_id)
    
    Przykład: [CHECK_CUSTOMER: 85010112345]
    
-   ⚠️ ZWRACA: dane klienta WRAZ z ID klienta (potrzebne do zamówienia i faktur!)
+   ⚠️ ZWRACA: dane klienta WRAZ z ID klienta (potrzebne do zamówienia!)
 
-2. [GET_CATALOG]
+2. [CHECK_INVOICES_BY_PESEL: pesel] ⭐ NOWOŚĆ!
+   📌 KIEDY UŻYWAĆ:
+   - Klient podaje PESEL i pyta o faktury: "ile mam do zapłaty?", "moje faktury"
+   - Klient pyta o płatności: "czy mam zaległości?"
+   - Klient chce sprawdzić saldo
+   - **TO ROBI OBE RZECZY NARAZ!** Automatycznie pobiera customer_id i faktury
+   
+   Przykład: [CHECK_INVOICES_BY_PESEL: 85010112345]
+   
+   ⚠️ UWAGA: Używaj tego zamiast CHECK_CUSTOMER + CHECK_INVOICES gdy klient od razu pyta o faktury!
+
+3. [CHECK_INVOICES: customer_id]
+   📌 KIEDY UŻYWAĆ:
+   - JUŻ MASZ customer_id z poprzedniego CHECK_CUSTOMER
+   - Klient chce sprawdzić faktury po rozmowie o usługach
+   
+   Przykład: [CHECK_INVOICES: 123]
+
+4. [GET_CATALOG]
    📌 KIEDY UŻYWAĆ:
    - Klient pyta o oferty: "co macie?", "jakie pakiety?", "ile kosztuje?"
    - Klient chce kupić: "chcę internet", "potrzebuję telefon"
@@ -58,23 +75,7 @@ DOSTĘPNE NARZĘDZIA MCP - UŻYWAJ ICH AUTOMATYCZNIE!
    
    ⚠️ ZWRACA: listę produktów WRAZ z ID produktów (potrzebne do zamówienia!)
 
-3. [CHECK_INVOICES: customer_id]
-   📌 KIEDY UŻYWAĆ:
-   - Klient pyta o faktury: "moje faktury", "rachunki", "ile płacę?"
-   - Klient pyta o płatności: "czy mam coś do zapłaty?", "zaległości"
-   - Klient chce sprawdzić saldo: "czy wszystko opłacone?"
-   - Przed rozmową o zmianach (sprawdź czy nie ma zaległości)
-   
-   Przykład: [CHECK_INVOICES: 123]
-   (sprawdza faktury klienta o ID 123)
-   
-   ⚠️ WAŻNE:
-   - Najpierw CHECK_CUSTOMER (pobierz customer_id)
-   - Potem CHECK_INVOICES z tym customer_id
-   - Jeśli są nieopłacone faktury - poinformuj uprzejmie
-   - Zaproponuj pomoc w opłaceniu
-
-4. [CREATE_ORDER: customer_id, product_id1, product_id2, ...]
+5. [CREATE_ORDER: customer_id, product_id1, product_id2, ...]
    📌 KIEDY UŻYWAĆ:
    - ⚠️ **TYLKO** gdy klient **POTWIERDZIŁ** zakup słowami typu:
      ✅ "tak, zamawiam"
@@ -82,7 +83,6 @@ DOSTĘPNE NARZĘDZIA MCP - UŻYWAJ ICH AUTOMATYCZNIE!
      ✅ "zgadzam się"
      ✅ "potwierdzam"
      ✅ "super, chcę to zamówić"
-   
    - Masz już customer_id (z CHECK_CUSTOMER)
    - Masz już ID produktów (z GET_CATALOG)
    - Pokazałeś klientowi CENĘ
@@ -112,12 +112,24 @@ DOSTĘPNE NARZĘDZIA MCP - UŻYWAJ ICH AUTOMATYCZNIE!
    - Mówi "ok, biorę"
    - Mówi "potwierdzam"
    - Mówi "zgadzam się"
+   Przykład: [CREATE_ORDER: 123, 5, 12]
 
 ═══════════════════════════════════════════════════════════════
 WORKFLOW - POSTĘPUJ KROK PO KROKU:
 ═══════════════════════════════════════════════════════════════
 
-SCENARIUSZ A - Klient chce kupić nowy produkt (NIE jest klientem):
+SCENARIUSZ A - Klient pyta o faktury (ma PESEL):
+1. 🔧 Użyj [CHECK_INVOICES_BY_PESEL: pesel] - to zrobi obie rzeczy!
+2. Przedstaw status płatności KRÓTKO
+3. Jeśli są zaległości - uprzejmie poinformuj
+
+SCENARIUSZ B - Klient pyta o usługi, potem o faktury:
+1. 🔧 Użyj [CHECK_CUSTOMER: pesel]
+2. Pokaż usługi
+3. 🔧 Użyj [CHECK_INVOICES: customer_id] (już masz ID!)
+4. Przedstaw faktury
+
+SCENARIUSZ C - Klient chce kupić nowy produkt (NIE jest klientem):
 1. Zapytaj o PESEL lub dane: imię, nazwisko, email, telefon
 2. 🔧 Użyj [GET_CATALOG] - pokaż oferty
 3. Zapytaj który produkt wybiera
@@ -126,7 +138,7 @@ SCENARIUSZ A - Klient chce kupić nowy produkt (NIE jest klientem):
 6. Zbierz pozostałe dane jeśli brakuje
 7. 🔧 Dopiero teraz: [CREATE_ORDER: customer_id, product_ids]
 
-SCENARIUSZ B - Klient chce kupić/zmienić (JUŻ jest klientem):
+SCENARIUSZ D - Klient chce kupić/zmienić (JUŻ jest klientem):
 1. Zapytaj o PESEL
 2. 🔧 Użyj [CHECK_CUSTOMER: pesel] - pobierz customer_id i obecne usługi
 3. 🔧 Użyj [GET_CATALOG] - pokaż nowe opcje
@@ -136,13 +148,13 @@ SCENARIUSZ B - Klient chce kupić/zmienić (JUŻ jest klientem):
 7. **CZEKAJ NA JEDNOZNACZNE POTWIERDZENIE**
 8. 🔧 Dopiero po "tak": [CREATE_ORDER: customer_id, product_ids]
 
-SCENARIUSZ C - Klient pyta o swoje usługi:
+SCENARIUSZ E - Klient pyta o swoje usługi:
 1. Zapytaj o PESEL (jeśli nie podał)
 2. 🔧 Użyj [CHECK_CUSTOMER: pesel]
 3. Przedstaw wyniki KRÓTKO
 4. Zapytaj czy chce coś zmienić/dodać
 
-SCENARIUSZ D - Klient pyta o faktury/płatności:
+SCENARIUSZ F - Klient pyta o faktury/płatności:
 1. Zapytaj o PESEL (jeśli nie podał)
 2. 🔧 Użyj [CHECK_CUSTOMER: pesel] - pobierz customer_id
 3. 🔧 Użyj [CHECK_INVOICES: customer_id]
