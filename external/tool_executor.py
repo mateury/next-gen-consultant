@@ -5,14 +5,14 @@ Tool execution logic for MCP commands.
 import re
 import json
 from typing import List, Tuple, Optional, Callable
-from .mcp_server import check_customer, get_product_catalog
+from .mcp_server import check_customer, get_product_catalog, create_order
 
 
 class ToolExecutor:
     """Handles execution of MCP tool commands."""
     
     # Regex pattern for finding tool commands
-    TOOL_PATTERN = r'\[(?:CHECK_CUSTOMER:[^\]]+|GET_CATALOG)\]'
+    TOOL_PATTERN = r'\[(?:CHECK_CUSTOMER:[^\]]+|GET_CATALOG|CREATE_ORDER:[^\]]+)\]'
     
     @staticmethod
     def find_tool_commands(text: str) -> List[str]:
@@ -48,6 +48,22 @@ class ToolExecutor:
             elif command.upper().startswith("[GET_CATALOG"):
                 return await get_product_catalog(None)
             
+            # [CREATE_ORDER: customer_id, product_id1, product_id2, ...]
+            elif command.upper().startswith("[CREATE_ORDER:"):
+                # Parse: customer_id, component_id1, component_id2, ...
+                params_str = command[14:-1].strip()
+                params = [p.strip() for p in params_str.split(',')]
+                
+                if len(params) < 2:
+                    return "❌ CREATE_ORDER wymaga co najmniej 2 parametrów: customer_id oraz przynajmniej jeden component_catalog_id"
+                
+                try:
+                    customer_id = int(params[0])
+                    component_ids = [int(p) for p in params[1:]]
+                    return await create_order(customer_id, component_ids)
+                except ValueError:
+                    return f"❌ Nieprawidłowe parametry CREATE_ORDER. Wymagane: liczby całkowite. Otrzymano: {params}"
+            
             else:
                 return f"❌ Nieznana komenda: {command}"
                 
@@ -79,14 +95,13 @@ class ToolExecutor:
         results = []
         for command in commands:
             if callback:
-                await callback(f"\n\n🔧 Wykonuję: {command}\n\n")
+                await callback(f"\n🔧 Wykonuję narzędzie: {command}\n")
             
             result = await ToolExecutor.execute_command(command)
             results.append((command, result))
             
             if callback:
-                await callback(result)
-                await callback("\n\n")
+                await callback(f"✅ Otrzymano wynik ({len(result)} znaków)\n")
         
         return results
     

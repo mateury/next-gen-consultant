@@ -1,7 +1,7 @@
 import httpx
 import os
 from mcp.server import FastMCP
-from typing import Optional
+from typing import Optional, List
 
 # Create MCP server instance
 mcp = FastMCP("next-gen-sales-service")
@@ -40,11 +40,12 @@ def format_customer_info(customer_data: dict) -> str:
         return f"❌ {customer_data['error']}"
     
     info = f"""
- Informacje o kliencie:
+📋 Informacje o kliencie:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👤 Imię i nazwisko: {customer_data.get('firstName', '')} {customer_data.get('lastName', '')}
 📧 Email: {customer_data.get('email', 'brak')}
 🆔 PESEL: {customer_data.get('pesel', 'brak')}
+🔑 ID klienta: {customer_data.get('id', 'brak')}
 📊 Status: {customer_data.get('status', 'nieznany')}
 👥 Typ: {customer_data.get('type', 'nieznany')}
 
@@ -114,6 +115,41 @@ def format_catalog(catalog_data: list) -> str:
     return info
 
 
+def format_order_response(order_data: dict) -> str:
+    """Formatuje odpowiedź po utworzeniu zamówienia"""
+    if "error" in order_data:
+        return f"❌ Błąd podczas tworzenia zamówienia: {order_data['error']}"
+    
+    info = f"""
+✅ Zamówienie zostało pomyślnie utworzone!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🆔 Numer zamówienia: {order_data.get('orderId', order_data.get('id', 'brak'))}
+👤 ID klienta: {order_data.get('customerId', 'brak')}
+📅 Data utworzenia: {order_data.get('createdAt', order_data.get('orderDate', 'brak'))}
+📊 Status: {order_data.get('status', 'W trakcie realizacji')}
+
+"""
+    
+    # Pokaż zamówione komponenty
+    components = order_data.get('components', order_data.get('componentCatalogIds', []))
+    if components:
+        info += f"📦 Zamówione produkty:\n"
+        if isinstance(components, list):
+            if isinstance(components[0], dict):
+                # Jeśli są to pełne obiekty
+                for idx, comp in enumerate(components, 1):
+                    info += f"   {idx}. {comp.get('name', 'Produkt')} (ID: {comp.get('id', 'brak')})\n"
+            else:
+                # Jeśli są to tylko ID
+                for idx, comp_id in enumerate(components, 1):
+                    info += f"   {idx}. Produkt ID: {comp_id}\n"
+    
+    info += "\n🎉 Dziękujemy za zamówienie! Wkrótce skontaktujemy się w sprawie realizacji."
+    
+    return info
+
+
 # --- MCP Tools (exposed functions) ---
 
 @mcp.tool()
@@ -125,7 +161,7 @@ async def check_customer(pesel: str) -> str:
         pesel: Numer PESEL klienta (11 cyfr)
     
     Returns:
-        Sformatowane informacje o kliencie i jego usługach
+        Sformatowane informacje o kliencie i jego usługach (zawiera ID klienta potrzebne do zamówienia)
     """
     customer_data = await call_java_backend("customer", params={"pesel": pesel})
     return format_customer_info(customer_data)
@@ -140,7 +176,7 @@ async def get_product_catalog(product_type: Optional[str] = None) -> str:
         product_type: Typ produktu do filtrowania (MOBILE, INTERNET, TV) - opcjonalnie
     
     Returns:
-        Sformatowany katalog produktów z cenami i szczegółami
+        Sformatowany katalog produktów z cenami i szczegółami (zawiera ID produktów)
     """
     params = {}
     if product_type:
@@ -152,3 +188,28 @@ async def get_product_catalog(product_type: Optional[str] = None) -> str:
         return f"❌ Błąd pobierania katalogu: {catalog_data['error']}"
     
     return format_catalog(catalog_data)
+
+
+@mcp.tool()
+async def create_order(customer_id: int, component_catalog_ids: List[int]) -> str:
+    """
+    Tworzy nowe zamówienie dla klienta.
+    
+    Args:
+        customer_id: ID klienta (pobierz z check_customer)
+        component_catalog_ids: Lista ID produktów z katalogu (pobierz z get_product_catalog)
+    
+    Returns:
+        Potwierdzenie utworzenia zamówienia z numerem
+    
+    Example:
+        customer_id=123, component_catalog_ids=[5, 12] 
+        tworzy zamówienie na produkty o ID 5 i 12 dla klienta 123
+    """
+    order_data = {
+        "customerId": customer_id,
+        "componentCatalogIds": component_catalog_ids
+    }
+    
+    result = await call_java_backend("order", method="POST", data=order_data)
+    return format_order_response(result)
