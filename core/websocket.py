@@ -112,7 +112,7 @@ class WebSocketHandler:
             nonlocal chunk_count, total_length, chunks_preview, client_message_started
             
             # Skip tool command text from being sent to client
-            if chunk.startswith("[") and ("CHECK_CUSTOMER" in chunk or "GET_CATALOG" in chunk or "CREATE_ORDER" in chunk):
+            if chunk.startswith("[") and ("CHECK_CUSTOMER" in chunk or "GET_CATALOG" in chunk or "CREATE_ORDER" in chunk or "CHECK_INVOICES" in chunk):
                 return
             
             chunk_count += 1
@@ -193,7 +193,7 @@ class WebSocketHandler:
             "response_preview": response[:300] + "..." if len(response) > 300 else response,
             "full_length": len(response),
             "client_visible_length": total_length,
-            "has_tool_commands": any(cmd in response for cmd in ["[CHECK_CUSTOMER:", "[GET_CATALOG:", "[CREATE_ORDER:"])
+            "has_tool_commands": any(cmd in response for cmd in ["[CHECK_CUSTOMER:", "[GET_CATALOG:", "[CREATE_ORDER:", "[CHECK_INVOICES:"])
         })
     
     async def _handle_api_error(self, websocket: WebSocket, session_id: str, message: str, error: Exception):

@@ -5,14 +5,14 @@ Tool execution logic for MCP commands.
 import re
 import json
 from typing import List, Tuple, Optional, Callable
-from .mcp_server import check_customer, get_product_catalog, create_order
+from .mcp_server import check_customer, get_product_catalog, create_order, check_invoices
 
 
 class ToolExecutor:
     """Handles execution of MCP tool commands."""
     
     # Regex pattern for finding tool commands
-    TOOL_PATTERN = r'\[(?:CHECK_CUSTOMER:[^\]]+|GET_CATALOG|CREATE_ORDER:[^\]]+)\]'
+    TOOL_PATTERN = r'\[(?:CHECK_CUSTOMER:[^\]]+|GET_CATALOG|CREATE_ORDER:[^\]]+|CHECK_INVOICES:[^\]]+)\]'
     
     @staticmethod
     def find_tool_commands(text: str) -> List[str]:
@@ -63,6 +63,15 @@ class ToolExecutor:
                     return await create_order(customer_id, component_ids)
                 except ValueError:
                     return f"❌ Nieprawidłowe parametry CREATE_ORDER. Wymagane: liczby całkowite. Otrzymano: {params}"
+            
+            # [CHECK_INVOICES: customer_id]
+            elif command.upper().startswith("[CHECK_INVOICES:"):
+                customer_id_str = command[16:-1].strip()
+                try:
+                    customer_id = int(customer_id_str)
+                    return await check_invoices(customer_id)
+                except ValueError:
+                    return f"❌ Nieprawidłowy customer_id dla CHECK_INVOICES. Wymagane: liczba całkowita. Otrzymano: {customer_id_str}"
             
             else:
                 return f"❌ Nieznana komenda: {command}"

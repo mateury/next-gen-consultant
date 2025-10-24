@@ -2,6 +2,7 @@ import httpx
 import os
 from mcp.server import FastMCP
 from typing import Optional, List
+from datetime import datetime
 
 # Create MCP server instance
 mcp = FastMCP("next-gen-sales-service")
@@ -34,6 +35,17 @@ async def call_java_backend(endpoint: str, method="GET", params=None, data=None)
 
 
 # --- Formatting helpers ---
+def format_date(date_str: str) -> str:
+    """Formatuje datę z ISO do czytelnej formy"""
+    try:
+        if 'T' in date_str:
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            return dt.strftime('%d.%m.%Y')
+        return date_str
+    except:
+        return date_str
+
+
 def format_customer_info(customer_data: dict) -> str:
     """Formatuje dane klienta do czytelnej formy"""
     if "error" in customer_data:
@@ -120,32 +132,129 @@ def format_order_response(order_data: dict) -> str:
     if "error" in order_data:
         return f"❌ Błąd podczas tworzenia zamówienia: {order_data['error']}"
     
+    # Parsuj rzeczywiste pola z odpowiedzi
+    order_id = order_data.get('id', 'brak')
+    customer_id = order_data.get('customerId', 'brak')
+    status = order_data.get('status', 'NEW')
+    create_date = order_data.get('createDate', 'brak')
+    
+    # Status po polsku
+    status_pl = {
+        'NEW': 'Nowe',
+        'PENDING': 'W trakcie',
+        'PROCESSING': 'Przetwarzane',
+        'COMPLETED': 'Zrealizowane',
+        'CANCELLED': 'Anulowane'
+    }.get(status, status)
+    
     info = f"""
 ✅ Zamówienie zostało pomyślnie utworzone!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🆔 Numer zamówienia: {order_data.get('orderId', order_data.get('id', 'brak'))}
-👤 ID klienta: {order_data.get('customerId', 'brak')}
-📅 Data utworzenia: {order_data.get('createdAt', order_data.get('orderDate', 'brak'))}
-📊 Status: {order_data.get('status', 'W trakcie realizacji')}
+🆔 Numer zamówienia: {order_id}
+👤 ID klienta: {customer_id}
+📅 Data utworzenia: {format_date(str(create_date))}
+📊 Status: {status_pl}
 
 """
     
-    # Pokaż zamówione komponenty
-    components = order_data.get('components', order_data.get('componentCatalogIds', []))
-    if components:
-        info += f"📦 Zamówione produkty:\n"
-        if isinstance(components, list):
-            if isinstance(components[0], dict):
-                # Jeśli są to pełne obiekty
-                for idx, comp in enumerate(components, 1):
-                    info += f"   {idx}. {comp.get('name', 'Produkt')} (ID: {comp.get('id', 'brak')})\n"
-            else:
-                # Jeśli są to tylko ID
-                for idx, comp_id in enumerate(components, 1):
-                    info += f"   {idx}. Produkt ID: {comp_id}\n"
+    # Pokaż zamówione produkty z orderItems
+    order_items = order_data.get('orderItems', [])
+    if order_items:
+        info += f"📦 Zamówione produkty ({len(order_items)}):\n\n"
+        for idx, item in enumerate(order_items, 1):
+            component_name = item.get('componentCatalogName', 'Produkt')
+            component_id = item.get('componentCatalogId', 'brak')
+            item_status = item.get('status', 'NEW')
+            item_status_pl = {
+                'NEW': 'Nowy',
+                'PENDING': 'W trakcie',
+                'PROCESSING': 'Przetwarzany',
+                'COMPLETED': 'Zrealizowany',
+                'CANCELLED': 'Anulowany'
+            }.get(item_status, item_status)
+            
+            info += f"   {idx}. {component_name}\n"
+            info += f"      ├─ ID produktu: {component_id}\n"
+            info += f"      ├─ Status: {item_status_pl}\n"
+            info += f"      └─ ID pozycji: {item.get('id', 'brak')}\n\n"
+    else:
+        info += "📦 Brak pozycji w zamówieniu (błąd systemu)\n\n"
     
-    info += "\n🎉 Dziękujemy za zamówienie! Wkrótce skontaktujemy się w sprawie realizacji."
+    info += "🎉 Dziękujemy za zamówienie! Wkrótce skontaktujemy się w sprawie realizacji."
+    
+    return info
+
+
+def format_invoices(invoices_data: list) -> str:
+    """Formatuje listę faktur do czytelnej formy"""
+    if isinstance(invoices_data, dict) and "error" in invoices_data:
+        return f"❌ Błąd pobierania faktur: {invoices_data['error']}"
+    
+    if not invoices_data:
+        return "📄 Brak faktur do wyświetlenia."
+    
+    # Statystyki
+    total_invoices = len(invoices_data)
+    paid_count = sum(1 for inv in invoices_data if inv.get('status') == 'PAID')
+    unpaid_count = sum(1 for inv in invoices_data if inv.get('status') == 'UNPAID')
+    total_unpaid = sum(float(inv.get('priceGross', 0)) for inv in invoices_data if inv.get('status') == 'UNPAID')
+    
+    info = f"""
+💰 Faktury klienta:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Wszystkich faktur: {total_invoices}
+✅ Opłaconych: {paid_count}
+⚠️ Nieopłaconych: {unpaid_count}
+"""
+    
+    if unpaid_count > 0:
+        info += f"💸 Suma do zapłaty: {total_unpaid:.2f} PLN\n"
+    
+    info += "\n"
+    
+    # Sortuj: najpierw nieopłacone, potem opłacone (od najnowszych)
+    sorted_invoices = sorted(
+        invoices_data, 
+        key=lambda x: (x.get('status') != 'UNPAID', x.get('createDate', '')),
+        reverse=True
+    )
+    
+    for idx, invoice in enumerate(sorted_invoices, 1):
+        inv_id = invoice.get('id', 'brak')
+        status = invoice.get('status', 'UNKNOWN')
+        price = invoice.get('priceGross', '0.00')
+        start_date = format_date(invoice.get('billingPeriodStartDate', ''))
+        end_date = format_date(invoice.get('billingPeriodEndDate', ''))
+        create_date = format_date(invoice.get('createDate', ''))
+        
+        # Status i emoji
+        if status == 'PAID':
+            status_emoji = '✅'
+            status_text = 'Opłacona'
+        elif status == 'UNPAID':
+            status_emoji = '⚠️'
+            status_text = 'Nieopłacona'
+        elif status == 'OVERDUE':
+            status_emoji = '🔴'
+            status_text = 'Po terminie'
+        elif status == 'CANCELLED':
+            status_emoji = '❌'
+            status_text = 'Anulowana'
+        else:
+            status_emoji = '❓'
+            status_text = status
+        
+        info += f"\n{idx}. {status_emoji} Faktura #{inv_id}\n"
+        info += f"   ├─ Status: {status_text}\n"
+        info += f"   ├─ Kwota: {price} PLN\n"
+        info += f"   ├─ Okres rozliczeniowy: {start_date} - {end_date}\n"
+        info += f"   └─ Data wystawienia: {create_date}\n"
+    
+    if unpaid_count > 0:
+        info += f"\n⚠️ UWAGA: Masz {unpaid_count} nieopłaconą(ych) faktur(y) na kwotę {total_unpaid:.2f} PLN."
+    else:
+        info += "\n✅ Wszystkie faktury są opłacone!"
     
     return info
 
@@ -213,3 +322,21 @@ async def create_order(customer_id: int, component_catalog_ids: List[int]) -> st
     
     result = await call_java_backend("order", method="POST", data=order_data)
     return format_order_response(result)
+
+
+@mcp.tool()
+async def check_invoices(customer_id: int) -> str:
+    """
+    Sprawdza faktury klienta i status płatności.
+    
+    Args:
+        customer_id: ID klienta (pobierz z check_customer)
+    
+    Returns:
+        Lista faktur ze statusami płatności i kwotami
+    
+    Example:
+        customer_id=123 - sprawdza wszystkie faktury klienta o ID 123
+    """
+    invoices_data = await call_java_backend("invoices", params={"customerId": customer_id})
+    return format_invoices(invoices_data)
