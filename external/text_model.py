@@ -8,7 +8,7 @@ class ModelConnector:
     def __init__(self):
         self.llm = ChatOpenAI(
             base_url="https://api.scaleway.ai/2d6e7638-f7f5-41f4-b61c-79209c1785be/v1",
-            api_key=os.environ.get("OPENAI_API_KEY"),
+            api_key=os.environ.get("SCW_SECRET_KEY"),
             model="gpt-oss-120b",
             max_tokens=512,
             temperature=1,

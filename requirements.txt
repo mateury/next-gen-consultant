@@ -1,5 +1,6 @@
-websockets=13.1
-fastapi=0.120.0
-openai=2.2.0
-langchain=0.2.17
-langchain-openai=0.1.25
+websockets==13.1
+fastapi==0.120.0
+langchain==0.2.17
+langchain-openai==0.1.25
+uvicorn==0.33.0
+python-dotenv==1.0.1
