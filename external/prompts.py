@@ -55,6 +55,8 @@ Twoja rola:
 
 "100 Mbps" → "sto megabitów na sekundę"
 "1 Gbps" → "jeden gigabit na sekundę"
+"100 GB" → "sto gigabajtów"
+"500 MB" → "pięćset megabajtów"
 
 ═══════════════════════════════════════════════════════════════
 ⭐ CENY SŁOWNIE - BARDZO WAŻNE! ⭐
