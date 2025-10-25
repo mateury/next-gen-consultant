@@ -50,7 +50,7 @@ class WebSocketHandler:
     
     async def _send_welcome(self, websocket: WebSocket, session_id: str, mc):
         """Send welcome message to client."""
-        welcome_msg = "Cześć! Jestem wirtualnym konsultantem Play. W czym mogę Ci dziś pomóc? 😊"
+        welcome_msg = "Cześć! Jestem doradcą w Play. W czym mogę Ci dziś pomóc? 😊"
         
         await websocket.send_json({
             "type": "message",
